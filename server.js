@@ -1,164 +1,160 @@
 #!/bin/env node
-//  OpenShift sample Node application
-var express = require('express');
-var fs      = require('fs');
+
+// Set up app and DB objects
+var express    = require('express');
+var stylus     = require('stylus');
+var fs         = require('fs');
+var FsProvider = require('./farmstand-mongodb.js').FarmstandProvider;
+
+// Create "express" server.
+var express = require("express");
+var app     = express();
+
+// Set up the DB
+var fsProv = new FsProvider(process.env.OPENSHIFT_MONGODB_DB_HOST,
+                            parseInt(process.env.OPENSHIFT_MONGODB_DB_PORT),
+                            process.env.OPENSHIFT_MONGODB_DB_USERNAME,
+                            process.env.OPENSHIFT_MONGODB_DB_PASSWORD);
+
+// Set up the app environment
+app.configure(function(){
+  app.set('views', process.env.OPENSHIFT_REPO_DIR + 'views');
+  app.set('view engine', 'jade');
+  app.set('view options', { pretty: true });
+  app.use(express.bodyParser());
+  app.use(express.methodOverride());
+  app.use(express.cookieParser());
+  app.use(express.session({ secret: 'your secret here' }));
+  app.use(app.router);
+  app.use(stylus.middleware({
+      src:  process.env.OPENSHIFT_REPO_DIR + 'views'  // .styl files are located in `views/stylesheets`
+    , dest: process.env.OPENSHIFT_REPO_DIR + 'public' // .styl resources are compiled `/stylesheets/*.css`
+    , compile: function(str, path) { // optional, but recommended
+	return stylus(str)
+	    .set('filename', path)
+	    .set('warn', true)
+	    .set('compress', true);
+    }
+  }));
+  app.use(express.static(process.env.OPENSHIFT_REPO_DIR + 'public'));
+});
 
 
-/**
- *  Define the sample application.
- */
-var SampleApp = function() {
+/*  =====================================================================  */
+/*  Setup route handlers.  */
+/*  =====================================================================  */
 
-    //  Scope.
-    var self = this;
+// Handler for GET /
+app.get('/', function(req, res) {
+    res.render('index', { layout: 'layout', title: 'Farmstands' });
+});
 
+// Handler for GET /locations.json
+app.get('/locations.json', function(req, res) {
+    var sType = req.query.t;
+    var qVal  = req.query.q;
+    fsProv.findByState(qVal, function(error, docs) {
+	if (error) {
+	    console.log(error);
+	}
+	else {
+	    res.send(docs);
+	}
+    });
+});
 
-    /*  ================================================================  */
-    /*  Helper functions.                                                 */
-    /*  ================================================================  */
-
-    /**
-     *  Set up server IP address and port # using env variables/defaults.
-     */
-    self.setupVariables = function() {
-        //  Set the environment variables we need.
-        self.ipaddress = process.env.OPENSHIFT_INTERNAL_IP;
-        self.port      = process.env.OPENSHIFT_INTERNAL_PORT || 8080;
-
-        if (typeof self.ipaddress === "undefined") {
-            //  Log errors on OpenShift but continue w/ 127.0.0.1 - this
-            //  allows us to run/test the app locally.
-            console.warn('No OPENSHIFT_INTERNAL_IP var, using 127.0.0.1');
-            self.ipaddress = "127.0.0.1";
-        };
-    };
-
-
-    /**
-     *  Populate the cache.
-     */
-    self.populateCache = function() {
-        if (typeof self.zcache === "undefined") {
-            self.zcache = { 'index.html': '' };
+// Handler for POST /locations.json
+app.post('/locations.json', function(req, res) {
+    var newLoc = req.body;
+    fsProv.saveLoc(newLoc, function(error, docs) {
+        if (error) {
+            console.log(error);
         }
-
-        //  Local cache for static content.
-        self.zcache['index.html'] = fs.readFileSync('./index.html');
-    };
-
-
-    /**
-     *  Retrieve entry (content) from cache.
-     *  @param {string} key  Key identifying content to retrieve from cache.
-     */
-    self.cache_get = function(key) { return self.zcache[key]; };
-
-
-    /**
-     *  terminator === the termination handler
-     *  Terminate server on receipt of the specified signal.
-     *  @param {string} sig  Signal to terminate on.
-     */
-    self.terminator = function(sig){
-        if (typeof sig === "string") {
-           console.log('%s: Received %s - terminating sample app ...',
-                       Date(Date.now()), sig);
-           process.exit(1);
+        else {
+            res.send(docs);
         }
-        console.log('%s: Node server stopped.', Date(Date.now()) );
-    };
+    });
+});
 
-
-    /**
-     *  Setup termination handlers (for exit and a list of signals).
-     */
-    self.setupTerminationHandlers = function(){
-        //  Process on exit and signals.
-        process.on('exit', function() { self.terminator(); });
-
-        // Removed 'SIGPIPE' from the list - bugz 852598.
-        ['SIGHUP', 'SIGINT', 'SIGQUIT', 'SIGILL', 'SIGTRAP', 'SIGABRT',
-         'SIGBUS', 'SIGFPE', 'SIGUSR1', 'SIGSEGV', 'SIGUSR2', 'SIGTERM'
-        ].forEach(function(element, index, array) {
-            process.on(element, function() { self.terminator(element); });
-        });
-    };
-
-
-    /*  ================================================================  */
-    /*  App server functions (main app logic here).                       */
-    /*  ================================================================  */
-
-    /**
-     *  Create the routing table entries + handlers for the application.
-     */
-    self.createRoutes = function() {
-        self.routes = { };
-
-        // Routes for /health, /asciimo and /
-        self.routes['/health'] = function(req, res) {
-            res.send('1');
-        };
-
-        self.routes['/asciimo'] = function(req, res) {
-            var link = "http://i.imgur.com/kmbjB.png";
-            res.send("<html><body><img src='" + link + "'></body></html>");
-        };
-
-        self.routes['/'] = function(req, res) {
-            res.setHeader('Content-Type', 'text/html');
-            res.send(self.cache_get('index.html') );
-        };
-    };
-
-
-    /**
-     *  Initialize the server (express) and create the routes and register
-     *  the handlers.
-     */
-    self.initializeServer = function() {
-        self.createRoutes();
-        self.app = express.createServer();
-
-        //  Add handlers for the app (from the routes).
-        for (var r in self.routes) {
-            self.app.get(r, self.routes[r]);
+// Handler for GET /states.json
+app.get('/states.json', function(req, res) {
+    fsProv.allStates( function(error, docs) {
+        if (error) {
+            console.log(error);
         }
-    };
+        else {
+            res.send(docs);
+        }
+    });
+});
 
+// Handler for GET /stategeo.json
+app.get('/stategeo.json', function(req, res) {
+    fsProv.allStateGeo( function(error, docs) {
+        if (error) {
+            console.log(error);
+        }
+        else {
+            res.send(docs);
+        }
+    });
+});
 
-    /**
-     *  Initializes the sample application.
-     */
-    self.initialize = function() {
-        self.setupVariables();
-        self.populateCache();
-        self.setupTerminationHandlers();
+// Handler for POST /stategeo.json
+app.post('/stategeo.json', function(req, res) {
+    var newGeo = req.body;
+    fsProv.setStateGeo(newGeo, function(error, docs) {
+        if (error) {
+            console.log(error);
+        }
+        else {
+            res.send(docs);
+        }
+    });
+});
 
-        // Create the express server and routes.
-        self.initializeServer();
-    };
+// Handler for POST /locgeo.json
+app.post('/locgeo.json', function(req, res) {
+    var locGeo      = req.body;
+    fsProv.setLocGeo(locGeo, function(error, docs) {
+        if (error) {
+            console.log(error);
+        }
+        else {
+            res.send(docs);
+        }
+    });
+});
 
+//  Get the environment variables we need.
+var ipaddr  = process.env.OPENSHIFT_INTERNAL_IP;
+var port    = process.env.OPENSHIFT_INTERNAL_PORT || 8080;
 
-    /**
-     *  Start the server (starts up the sample application).
-     */
-    self.start = function() {
-        //  Start the app on the specific interface (and port).
-        self.app.listen(self.port, self.ipaddress, function() {
-            console.log('%s: Node server started on %s:%d ...',
-                        Date(Date.now() ), self.ipaddress, self.port);
-        });
-    };
+if (typeof ipaddr === "undefined") {
+   console.warn('No OPENSHIFT_INTERNAL_IP environment variable');
+}
 
-};   /*  Sample Application.  */
+//  terminator === the termination handler.
+function terminator(sig) {
+   if (typeof sig === "string") {
+      console.log('%s: Received %s - terminating Node server ...',
+                  Date(Date.now()), sig);
+      process.exit(1);
+   }
+   console.log('%s: Node server stopped.', Date(Date.now()) );
+}
 
+//  Process on exit and signals.
+process.on('exit', function() { terminator(); });
 
+['SIGHUP', 'SIGINT', 'SIGQUIT', 'SIGILL', 'SIGTRAP', 'SIGABRT', 'SIGBUS',
+ 'SIGFPE', 'SIGUSR1', 'SIGSEGV', 'SIGUSR2', 'SIGPIPE', 'SIGTERM'
+].forEach(function(element, index, array) {
+    process.on(element, function() { terminator(element); });
+});
 
-/**
- *  main():  Main code.
- */
-var zapp = new SampleApp();
-zapp.initialize();
-zapp.start();
-
+//  And start the app on that interface (and port).
+app.listen(port, ipaddr, function() {
+   console.log('%s: Node server started on %s:%d ...', Date(Date.now() ),
+               ipaddr, port);
+});
